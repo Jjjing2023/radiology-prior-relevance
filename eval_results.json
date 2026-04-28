@@ -1,0 +1,8 @@
+{
+  "timestamp": "2026-04-28T09:57:08.389265",
+  "model": "gemini-2.0-flash",
+  "total_cases": 996,
+  "total_predictions": 27614,
+  "correct": 23308,
+  "accuracy": 0.8440646049105526
+}
