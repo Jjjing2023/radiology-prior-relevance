@@ -59,25 +59,24 @@ def is_relevant(current_desc: str, prior_desc: str) -> bool:
     return False
 
 # ---- LLM prediction ----
-def make_cache_key(current_desc, prior_descs):
-    content = current_desc + "|" + ",".join(prior_descs)
+def make_cache_key(case_id, current_desc, prior_descs):
+    content = case_id + "|" + current_desc + "|" + ",".join(prior_descs)
     return hashlib.md5(content.encode()).hexdigest()
 
-def llm_predict(current_study: Study, prior_studies: List[Study]) -> dict:
-    """return {study_id: bool} map"""
-    
+def llm_predict(case_id: str, current_study: Study, prior_studies: List[Study]) -> dict:
     cache_key = make_cache_key(
+        case_id,
         current_study.study_description,
         [p.study_description for p in prior_studies]
     )
     if cache_key in cache:
         return cache[cache_key]
-    
+
     prior_list = "\n".join([
         f"{i+1}. study_id={p.study_id}, description={p.study_description}, date={p.study_date}"
         for i, p in enumerate(prior_studies)
     ])
-    
+
     prompt = f"""You are an expert radiologist. When reading a current examination, determine which prior examinations are worth reviewing for comparison.
 
 Current examination: {current_study.study_description} (date: {current_study.study_date})
@@ -94,22 +93,38 @@ Return ONLY a valid JSON object mapping each study_id to true or false.
 No markdown, no explanation, just JSON.
 Example: {{"2453245": true, "992654": false}}"""
 
-    response = client.models.generate_content(
-    model="gemini-2.0-flash",
-    contents=prompt
-)
-    result_text = response.text.strip()
-    
-    # remove markdown just in case 
-    if result_text.startswith("```"):
-        result_text = result_text.split("```")[1]
-        if result_text.startswith("json"):
-            result_text = result_text[4:]
+    # retry up to 3 times
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=prompt
+            )
+            result_text = response.text.strip()
 
-    result = json.loads(result_text) 
-    result = {str(k): bool(v) for k, v in result.items()}
-    cache[cache_key] = result
-    return result
+            # remove markdown
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+
+            result = json.loads(result_text)
+            result = {str(k): bool(v) for k, v in result.items()}
+
+            # verify every prior has a prediction
+            for p in prior_studies:
+                if str(p.study_id) not in result:
+                    result[str(p.study_id)] = False
+
+            cache[cache_key] = result
+            return result
+
+        except Exception as e:
+            print(f"LLM attempt {attempt+1} failed: {e}")
+            if attempt == 2:
+                raise
+
+    raise Exception("LLM failed after 3 attempts")
 
 # ---- Endpoint ----
 @app.post("/predict", response_model=Response)
@@ -118,7 +133,7 @@ def predict(request: Request):
     for case in request.cases:
         current_desc = case.current_study.study_description or ""
         try:
-            relevance_map = llm_predict(case.current_study, case.prior_studies)
+            relevance_map = llm_predict(case.case_id, case.current_study, case.prior_studies)
             for prior in case.prior_studies:
                 relevant = relevance_map.get(prior.study_id, False)
                 predictions.append(Prediction(

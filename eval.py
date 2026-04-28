@@ -10,7 +10,7 @@ correct = 0
 total = 0
 
 # 把前10个case发给API
-payload = {"cases": data['cases'][:10]}
+payload = {"cases": data['cases']}
 response = requests.post("http://127.0.0.1:8000/predict", json=payload)
 predictions = response.json()['predictions']
 
